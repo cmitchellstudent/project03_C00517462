@@ -5,6 +5,8 @@ import java.util.concurrent.locks.ReentrantLock;
 
 public class Main {
     public static void main(String[] args) {
+        
+        
         Random rand = new Random();
         //intended args "-S <1/2/3/4> -C <1/2/3/4>" -C and num. of cores optional (defaults to 1)
         //OR "-C <1/2/3/4> -S <1/2/3/4>" is also accepted.
@@ -29,6 +31,10 @@ public class Main {
         }
         //Core assignment
         int cores;
+
+selectionIndex = 0;
+coreIndex = -1; // Prevents -C from overriding
+
         if(coreIndex != -1){
             switch (args[coreIndex+1]){
                 case ("1") ->{
@@ -57,7 +63,11 @@ public class Main {
             cores = 1;
         }
         //Selection Assignment
+        
         if (selectionIndex != -1) {
+            args = new String[] { "-S", "4" };
+selectionIndex = 0;
+coreIndex = -1; // Prevents -C from overriding
             switch (args[selectionIndex+1]) {
                 case ("1") -> {
                     //FCFS
@@ -106,16 +116,55 @@ public class Main {
                     //NP - SJF
                     System.out.println("Scheduler Algorithm Select: Non-Preemptive Shortest Job First");
                 }
-                case ("4") -> {
-                    //P - SJF. only needs 1 core implementation
+                case "4" -> {
                     System.out.println("Scheduler Algorithm Select: Preemptive Shortest Job First");
-                }
+                    cores = 1;
+                    int t = rand.nextInt(1, 26);
+                    AtomicInteger completedTasks = new AtomicInteger(0);
 
+                    Dispatcher.psjfQueue = new PriorityQueue<>(Comparator.comparingInt(task -> task.burstTime - task.progress));
+                    Dispatcher.psjfLock = new ReentrantLock(true);
+                    Semaphore arrivals = new Semaphore(0);
+                    Dispatcher.arrivals = arrivals;
+
+                    List<Task> allTasks = new ArrayList<>();
+                    for (int i = 0; i < t; i++) {
+                        Task task = new Task(rand.nextInt(1, 51), i, completedTasks);
+                        allTasks.add(task);
+                        System.out.println("Creating task thread " + i + " (burst=" + task.burstTime + ")");
+                        task.start();
+                    }
+
+                    new Thread(() -> {
+                        for (Task task : allTasks) {
+                            try {
+                                Thread.sleep(rand.nextInt(1, 6) * 100L);
+                            } catch (InterruptedException ignored) {}
+                            Dispatcher.psjfLock.lock();
+                            try {
+                                Dispatcher.psjfQueue.add(task);
+                                System.out.println("Task " + task.tID + " arrived; queue:");
+                                printReadyQ(Dispatcher.psjfQueue);
+                            } finally {
+                                Dispatcher.psjfLock.unlock();
+                            }
+                            Dispatcher.arrivals.release();
+                        }
+                    }).start();
+
+                    Core core = new Core(0);
+                    Dispatcher dispatcher = new Dispatcher(0, Dispatcher.psjfQueue, core, "4", t, cores, completedTasks, Dispatcher.psjfLock, Dispatcher.arrivals);
+                    System.out.println("Creating dispatcher thread 0");
+                    core.start();
+                    dispatcher.start();
+                }
+                default -> {
+                    System.out.println("Unknown scheduler type.");
+                }
             }
-        } else {
-            System.out.println("Incorrect arguments. expected -S <1/2/3/4> -C <1/2/3/4>.");
         }
     }
+    
     public static void printReadyQ(Queue<Task> rq){
         System.out.println("--------------- Ready Queue ---------------");
         for (Task t: rq) {
@@ -160,6 +209,10 @@ public class Main {
                     progress++;
                     loopCounter++;
                 }
+                    System.out.println("Task Thread " + tID +
+            " | On CPU: Max Burst=" + burstTime +
+            ", Progress=" + progress + ", Allotted burst=" + allottedBurst);
+
                 taskFinish.release(1);
             }
             System.out.println("Task Thread " + tID + " | Completed");
@@ -176,19 +229,24 @@ public class Main {
         int t;
         static AtomicInteger completedTasks;
         Core assignedCore;
-
+    
         static String algoType;
         static Queue<Task> readyQueue;
         static ReentrantLock readyQLock = new ReentrantLock(true);
-
+    
         Semaphore dispatcherStart = new Semaphore(1);
         static Semaphore barrier = new Semaphore(0);
         static int barrierCount;
         static int numOfCores = 0;
         static ReentrantLock countMutex = new ReentrantLock();
-
-
-
+    
+        // [PSJF] New Priority Queue and Lock for PSJF
+        static PriorityQueue<Task> psjfQueue = new PriorityQueue<>(Comparator.comparingInt(t -> t.burstTime - t.progress)); // [PSJF]
+        static ReentrantLock psjfLock = new ReentrantLock(true); // [PSJF]
+        static boolean isRunning = false; // [PSJF]
+        static Task currentTask = null; // [PSJF]
+        static Semaphore arrivals;
+    
         public Dispatcher(int ID, Queue<Task> readyQueue, Core core, String algoType, int t, int numOfCores, AtomicInteger completedTasks){
             this.dID = ID;
             this.assignedCore = core;
@@ -199,6 +257,12 @@ public class Main {
             Dispatcher.numOfCores = numOfCores;
             Dispatcher.completedTasks = completedTasks;
         }
+        // [PSJF] Constructor for Preemptive Shortest Job First
+    public Dispatcher(int ID, Queue<Task> readyQueue, Core core, String algoType, int t, int numOfCores, AtomicInteger completedTasks, ReentrantLock psjfLock, Semaphore arrivals) {
+    this(ID, readyQueue, core, algoType, t, numOfCores, completedTasks); // Call original constructor
+    Dispatcher.psjfLock = psjfLock; // // <-- new line
+    Dispatcher.arrivals = arrivals; // // <-- new line
+}
 
         @Override
         public void run() {
@@ -243,6 +307,37 @@ public class Main {
                         System.exit(0);
                     }
                     countMutex.unlock();
+                }
+                case ("4") -> { // [PSJF] Start of Preemptive Shortest Job First
+                    System.out.println("Dispatcher " + dID + " | Running Preemptive Shortest Job First");
+    
+                    while (completedTasks.get() != t) {
+                        dispatcherStart.acquireUninterruptibly(); // Wait for task cycle
+    
+                        psjfLock.lock(); // Lock queue
+                        try {
+                            if (!psjfQueue.isEmpty()) {
+                                Task shortest = psjfQueue.peek(); // Peek at shortest
+                                if (currentTask == null || !currentTask.isAlive() || shortest != currentTask) {
+                                    currentTask = shortest;
+                                    assignedCore.setCurrentTask(currentTask, 1); // One cycle only
+                                    assignedCore.coreStart.release();
+                                    System.out.println("Dispatcher " + dID + " | Preempting for Task " + currentTask.tID);
+                                }
+                            }
+                        } finally {
+                            psjfLock.unlock();
+                        }
+    
+                        try {
+                            Thread.sleep(50); // [PSJF] Let core run
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+                    }
+    
+                    System.out.println("All tasks done, program exiting.");
+                    System.exit(0);
                 }
             }
         }
