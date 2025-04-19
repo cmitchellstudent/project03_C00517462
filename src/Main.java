@@ -1,4 +1,3 @@
-import java.util.Arrays;
 
 public class Main {
     public static void main(String[] args) {
@@ -75,7 +74,8 @@ public class Main {
                         System.exit(0);
                     } else {
                         System.out.println("Quantum: " + quantum);
-                        //Do algorithm.
+                        int[] RRargs = {cores, quantum};
+                        RoundRobin.main(RRargs);
                     }
                 }
                 case ("3") -> {
