@@ -3,6 +3,9 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 
+
+
+
 public class Main {
     public static void main(String[] args) {
         Random rand = new Random();
@@ -100,6 +103,8 @@ public class Main {
                     } else {
                         System.out.println("Quantum: " + quantum);
                         //Do algorithm.
+                        int[] RRargs = {cores, quantum};
+                        RoundRobin.main(RRargs);
                     }
                 }
                 case ("3") -> {
@@ -123,6 +128,15 @@ public class Main {
         }
         System.out.println("-------------------------------------------");
     }
+
+
+
+
+
+
+
+
+
     public static class Task extends Thread{
 
         int tID;
@@ -146,6 +160,14 @@ public class Main {
             Task.completedTasks = completedTasks;
         }
 
+        public Task(int id) {
+
+        this.tID = id;
+        //tasks burst times are generated at task creation
+        Random random = new Random();
+        this.burstTime = random.nextInt(1, 51);
+        }
+
         @Override
         public void run() {
             while (progress < burstTime){
@@ -165,9 +187,36 @@ public class Main {
             System.out.println("Task Thread " + tID + " | Completed");
             completedTasks.incrementAndGet();
         }
+
+
         public void CoreUpdate(int allottedBurst, int cID){
             this.allottedBurst = allottedBurst;
             this.currentCoreID = cID;
+        }
+
+        public String toString()
+        {
+            return "Task# " + tID;
+        }
+
+        public int getBurstTime()
+        {
+            return allottedBurst;
+        }
+
+        public boolean isComplete()
+        {
+            return isFinished;
+        }
+
+        public int getRemainingTime()
+        {
+            return burstTime - progress;
+        }
+
+        public int getID()
+        {
+            return tID;
         }
     }
 
@@ -278,4 +327,338 @@ public class Main {
             this.allottedBurstTime = allottedBurstTime;
         }
     }
+
+    public class RoundRobin{
+
+    private static volatile boolean lastTaskDone;
+    private static Semaphore[] coreStart;
+    private static Semaphore[] dispatcherStart;
+    private static Semaphore[] taskStart;
+    private static Semaphore[] taskFinished;
+    private static int quantum;
+    private static int numTasks;
+    private static int numCores;
+    private static Random random;
+    private static RRDispatcher[] dispatchers;
+    private static RRCore[] cores;
+    private static Task[] tasks;
+    private static Semaphore readyQueueSem = new Semaphore(1);
+    private static int tasksFinished = 0;
+    private static Semaphore finishedSem = new Semaphore(1);
+    private static Queue<Task> readyQueue = new LinkedList<>();
+    private static List<Thread> threads = new ArrayList<>();
+
+public static void main(int[] args)
+{
+    
+    numCores = args[0];
+    quantum = args[1];
+
+    lastTaskDone = false;
+
+    //creates random object and sets numTasks
+    random = new Random();
+    numTasks = random.nextInt(1,26);
+
+    System.out.println("Number of tasks: " + numTasks);
+    System.out.println("Number of cores: " + numCores);
+    //System.out.println("Quantum: " + quantum);
+
+    //initializes object arrays
+    dispatchers = new RRDispatcher[numCores];
+    cores = new RRCore[numCores];
+    tasks = new Task[numTasks];
+
+    //initializes semaphore arrays
+    coreStart = new Semaphore[numCores];
+    dispatcherStart = new Semaphore[numCores];
+    taskStart = new Semaphore[numTasks];
+    taskFinished = new Semaphore[numTasks];
+
+
+    //initializes and starts task objects and threads, adds tasks to array
+    for(int i = 0; i < numTasks; i++)
+    {
+        taskStart[i] = new Semaphore(0);
+        taskFinished[i] = new Semaphore(0);
+        Task task = new Task(i);
+        tasks[i] = task;
+        Thread t = new Thread(task);
+        threads.add(t);
+        t.start();
+
+        readyQueue.add(task);
+        System.out.println(task + " has been added to ready queue with " + task.getRemainingTime() + " bursts.");
+    }
+
+    printReadyQ(readyQueue);
+
+    //sets atomic int for task completion
+    AtomicInteger completedTasks = new AtomicInteger(0);
+    Task.completedTasks = completedTasks;
+
+
+    //populates sem and object arrays, starts threads
+    for(int i = 0; i < numCores; i++)
+    {
+        dispatcherStart[i] = new Semaphore(0);
+        RRDispatcher dispatcher = new RRDispatcher(i);
+        dispatchers[i] = dispatcher;
+        Thread d = new Thread(dispatcher);
+        threads.add(d);
+        d.start();
+
+        coreStart[i] = new Semaphore(0);
+        RRCore core = new RRCore(i);
+        cores[i] = core;
+        Thread c = new Thread(core);
+        threads.add(c);
+        c.start();
+
+    }
+
+    while(!(completedTasks.get() >= numTasks))
+    {
+        try {
+            Thread.sleep(500);
+        } catch (Exception e) {
+            System.out.println("Error while waiting for last task!");
+        }
+    }
+
+    lastTaskDone = true;
+
+    for(int i = 0; i < numCores; i++)
+    {
+        coreStart[i].release();
+        dispatcherStart[i].release();
+    }
+
+
+
+    for (Thread tdc : threads)
+    {
+        try{
+            tdc.join();
+        } catch(Exception E)
+        {
+            System.out.println("Error when joining threads!");
+        }
+    }
+
+    System.out.println("Simulation Finished!");
+
+    
+}
+
+private static class RRDispatcher implements Runnable
+{
+    private int id;
+    private Task newTask = null;
+
+    public RRDispatcher(int id) {
+        this.id = id;
+    }
+
+    @Override
+    public void run()
+    {
+
+        while(!lastTaskDone)
+        {
+            //allows dispatcher to wake up
+            dispatcherStart[id].acquireUninterruptibly();
+
+            if(lastTaskDone)
+            {
+                break;
+            }
+
+            //checks if newTask needs to be added back to ready queue
+            if((!(newTask==null)) && newTask.getRemainingTime() > 0)
+            {
+                readyQueueSem.acquireUninterruptibly();
+                readyQueue.add(newTask);
+                readyQueueSem.release();
+                System.out.println(newTask + " has been added to the ready queue again");
+            }
+
+            newTask = null;
+
+            //pulls task from queue
+            readyQueueSem.acquireUninterruptibly();
+            newTask = readyQueue.poll();
+            readyQueueSem.release();
+
+            if(newTask == null)
+            {
+                dispatcherStart[id].release();
+                continue;
+            }
+
+            System.out.println(newTask + " has been removed from ready queue to be placed on Core# " + id);
+
+
+            //assign task and burst to core
+            cores[id].setTask(newTask);
+            cores[id].setBursts(Math.min(quantum, newTask.getRemainingTime()));
+            System.out.println(newTask + " has " + Math.min(quantum, newTask.getRemainingTime()) + " bursts.");
+            
+
+            coreStart[id].release();
+        }
+
+    }
+}
+
+private static class RRCore implements Runnable
+{
+    private int id;
+    private int bursts;
+    private Task currentTask;
+
+
+    public RRCore(int id) {
+        this.id = id;
+    }
+
+    @Override
+    public void run()
+    {
+
+        //wakes up dispatcher for first run
+        dispatcherStart[id].release();
+
+        while(!lastTaskDone)
+        {
+            coreStart[id].acquireUninterruptibly();
+
+            if(lastTaskDone)
+            {
+                break;
+            }
+
+            //update task alloted bursts and core
+            currentTask.CoreUpdate(bursts, id);
+
+            System.out.println("Core# " + id + " is running " + currentTask);
+
+            currentTask.taskStart.release(1);
+
+            currentTask.taskFinish.acquireUninterruptibly();
+
+            dispatcherStart[id].release();
+        }
+    }
+
+    public void setTask(Task currentTask)
+    {
+        this.currentTask = currentTask;
+    }
+
+    public void setBursts(int bursts)
+    {
+        this.bursts = bursts;
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+/*
+    public static class Task extends Thread{
+
+        int tID;
+        boolean isFinished = false;
+        static AtomicInteger completedTasks;
+        //aka max burst
+        int burstTime;
+        int currentCoreID;
+
+        //an expression of completed burst time, updates once a cycle
+        int progress = 0;
+
+        int allottedBurst;
+        Semaphore taskStart = new Semaphore(0);
+        Semaphore taskFinish = new Semaphore(0);
+
+
+        public Task(int burstTime, int ID, AtomicInteger completedTasks){
+            this.burstTime = burstTime;
+            this.tID = ID;
+            Task.completedTasks = completedTasks;
+        }
+
+        public Task(int id) {
+
+        this.tID = id;
+        //tasks burst times are generated at task creation
+        this.burstTime = random.nextInt(1, 51);
+        }
+
+        @Override
+        public void run() {
+            while (progress < burstTime){
+                taskStart.acquireUninterruptibly();
+                System.out.println("Task Thread " + tID +
+                        " | On CPU: Max Burst=" + burstTime +
+                        ", Progress=" + progress + ", Allotted burst=" + allottedBurst);
+                int loopCounter = 0;
+                while (loopCounter < allottedBurst){
+                    System.out.println("Task Thread " + tID + " | Using CPU " + currentCoreID + "; On burst " + (progress+1));
+
+                    progress++;
+                    loopCounter++;
+                }
+                taskFinish.release(1);
+            }
+            System.out.println("Task Thread " + tID + " | Completed");
+            completedTasks.incrementAndGet();
+        }
+        public void CoreUpdate(int allottedBurst, int cID){
+            this.allottedBurst = allottedBurst;
+            this.currentCoreID = cID;
+        }
+
+        public String toString()
+        {
+            return "Task# " + tID;
+        }
+
+        public int getBurstTime()
+        {
+            return allottedBurst;
+        }
+
+        public boolean isComplete()
+        {
+            return isFinished;
+        }
+
+        public int getRemainingTime()
+        {
+            return burstTime - progress;
+        }
+
+        public int getID()
+        {
+            return tID;
+        }
+    }
+    */
+
+
+}
+
+
+    
+
+    
 }
