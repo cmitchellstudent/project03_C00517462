@@ -105,6 +105,34 @@ public class Main {
                 case ("3") -> {
                     //NP - SJF
                     System.out.println("Scheduler Algorithm Select: Non-Preemptive Shortest Job First");
+
+                    int t = rand.nextInt(1,5);
+                    AtomicInteger completedTasks = new AtomicInteger(0);
+                    List<Task> rqDisplay = new ArrayList<>(); // used to print tasks in order they arrive
+                    // As tasks are added, sort by ascending burst times
+                    Queue<Task> readyQueue = new PriorityQueue<>(Comparator.comparingInt(task -> task.burstTime));
+                    for (int i = 0; i < t; i++) {
+                        Task newTask = new Task(rand.nextInt(1,5), i, completedTasks);
+                        rqDisplay.add(newTask);
+                        readyQueue.add(newTask);
+                        System.out.println("Creating task thread " + i);
+                        newTask.start();
+                    }
+
+                    System.out.println("--------------- Ready Queue ---------------");
+                    for (Task task: rqDisplay) {
+                        System.out.println("ID: " + task.tID + ", Burst Time: " + task.burstTime + ", Progress: " + task.progress);
+                    }
+                    System.out.println("-------------------------------------------");
+
+                    for (int i = 0; i < cores; i++) {
+                        Core newCore = new Core(i);
+                        Dispatcher newDispatcher = new Dispatcher(i, readyQueue, newCore, "NP-SJF", t, cores, completedTasks);
+                        System.out.println("Creating dispatcher thread " + i);
+                        System.out.println("Dispatcher " + i + " | Using CPU " + i);
+                        newCore.start();
+                        newDispatcher.start();
+                    }
                 }
                 case ("4") -> {
                     //P - SJF. only needs 1 core implementation
@@ -123,6 +151,7 @@ public class Main {
         }
         System.out.println("-------------------------------------------");
     }
+
     public static class Task extends Thread{
 
         int tID;
@@ -236,6 +265,42 @@ public class Main {
                         assignedCore.setCurrentTask(selectedTask, selectedTask.burstTime);
                         assignedCore.coreStart.release(1);
                     } while (completedTasks.get() != t);
+                    countMutex.lock();
+                    barrierCount--;
+                    if (barrierCount == 0){
+                        System.out.println("All tasks done, program exiting.");
+                        System.exit(0);
+                    }
+                    countMutex.unlock();
+                }
+
+                case("NP-SJF") -> {
+                    System.out.println("Dispatcher " + dID + " | Running NP-SJF.");
+                    while (completedTasks.get() != t) {
+                        dispatcherStart.acquireUninterruptibly();
+
+                        readyQLock.lock(); // only allow this dispatcher to update queue
+
+                        Task currentTask;
+                        try {
+                            // remove task with the shortest burst time
+                            currentTask = readyQueue.remove();
+                        } catch (Exception e) {
+                            currentTask = null;
+                        }
+
+                        readyQLock.unlock();
+
+                        if (currentTask == null) { // no more items left in queue
+                            break;
+                        }
+
+                        System.out.println("\nDispatcher " + dID + " | Running Task " + currentTask.tID);
+                        assignedCore.setCurrentTask(currentTask, currentTask.burstTime);
+                        assignedCore.coreStart.release(1);
+                    }
+
+                    // barrier to end program when all tasks are completed
                     countMutex.lock();
                     barrierCount--;
                     if (barrierCount == 0){
