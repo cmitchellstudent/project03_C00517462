@@ -13,7 +13,7 @@ public class Main {
         //OR "-C <1/2/3/4> -S <1/2/3/4>" is also accepted.
         int coreIndex = -1;
         int selectionIndex = -1;
-        args = new String[] {"-S", "4"};
+        //args = new String[] {"-S", "4"};
         for (int i = 0; i < args.length; i++) {
             if (args[i].equals("-S")){
                 selectionIndex = i;
