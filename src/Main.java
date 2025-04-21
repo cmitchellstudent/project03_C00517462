@@ -407,7 +407,7 @@ public class Main {
                 
                             assignedCore.setCurrentTask(selectedTask, 1);  // Run 1 unit
                             assignedCore.coreStart.release();              // Start core
-                            selectedTask.taskFinish.acquireUninterruptibly();  // Wait for 1 unit
+                          
                 
                             // After running, check if task is finished or needs more time
                             if (selectedTask.progress < selectedTask.burstTime) {
