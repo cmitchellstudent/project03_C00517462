@@ -106,13 +106,13 @@ public class Main {
                     //NP - SJF
                     System.out.println("Scheduler Algorithm Select: Non-Preemptive Shortest Job First");
 
-                    int t = rand.nextInt(1,5);
+                    int t = rand.nextInt(1,26);
                     AtomicInteger completedTasks = new AtomicInteger(0);
                     List<Task> rqDisplay = new ArrayList<>(); // used to print tasks in order they arrive
                     // As tasks are added, sort by ascending burst times
                     Queue<Task> readyQueue = new PriorityQueue<>(Comparator.comparingInt(task -> task.burstTime));
                     for (int i = 0; i < t; i++) {
-                        Task newTask = new Task(rand.nextInt(1,5), i, completedTasks);
+                        Task newTask = new Task(rand.nextInt(1,51), i, completedTasks);
                         rqDisplay.add(newTask);
                         readyQueue.add(newTask);
                         System.out.println("Creating task thread " + i);
