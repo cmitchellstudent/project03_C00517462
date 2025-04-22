@@ -320,7 +320,7 @@ public class Main {
         static Queue<Task> readyQueue;
         static ReentrantLock readyQLock = new ReentrantLock(true);
 
-        static Semaphore dispatcherStart = new Semaphore(1);
+        static Semaphore dispatcherStart;
         static Semaphore barrier = new Semaphore(0);
         static int barrierCount;
         static int numOfCores = 0;
@@ -345,6 +345,7 @@ public class Main {
             this.t = t;
             Dispatcher.numOfCores = numOfCores;
             Dispatcher.completedTasks = completedTasks;
+            Dispatcher.dispatcherStart = new Semaphore(numOfCores);
         }
 
         public Dispatcher(int ID, Queue<Task> readyQueue, Core core, String algoType, int t, int numOfCores, AtomicInteger completedTasks, ReentrantLock psjfLock, Semaphore arrivals) {
@@ -389,12 +390,15 @@ public class Main {
                         assignedCore.coreStart.release(1);
                     } while (completedTasks.get() != t);
                     countMutex.lock();
-                    barrierCount--;
-                    if (barrierCount == 0){
-                        System.out.println("All tasks done, program exiting.");
-                        System.exit(0);
+                    try {
+                        barrierCount--;
+                        if (barrierCount == 0) {
+                            System.out.println("All tasks done, program exiting.");
+                            System.exit(0);
+                        }
+                    } finally {
+                        countMutex.unlock();
                     }
-                    countMutex.unlock();
                 }
 
                 case("NP-SJF") -> {
