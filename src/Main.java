@@ -13,7 +13,7 @@ public class Main {
         //OR "-C <1/2/3/4> -S <1/2/3/4>" is also accepted.
         int coreIndex = -1;
         int selectionIndex = -1;
-        //args = new String[] {"-S", "4"};
+        args = new String[] {"-S", "4"};
         for (int i = 0; i < args.length; i++) {
             if (args[i].equals("-S")){
                 selectionIndex = i;
@@ -142,74 +142,62 @@ public class Main {
                 }
                 case "4" -> {
                     System.out.println("Scheduler Algorithm Select: Preemptive - Shortest Job First");
-                    cores = 1;
-                    int t = rand.nextInt(1, 26);
-                    AtomicInteger completedTasks = new AtomicInteger(0);
-
-                    // Prepare shared PSJF queue + lock + semaphores
-                    Dispatcher.psjfQueue = new PriorityQueue<>(Comparator.comparingInt(task -> task.burstTime - task.progress));
-                    Dispatcher.psjfLock  = new ReentrantLock(true);
-                    Dispatcher.arrivals  = new Semaphore(0);
-                    Dispatcher.dispatcherStart = new Semaphore(0); // REQUIRED for proper dispatcher signaling
-
-                    // 1) Create all T tasks (they’ll wait on taskStart)
-                    List<Task> allTasks = new ArrayList<>();
+                    int t = rand.nextInt(1, 26);  // number of tasks
+                    AtomicInteger completed = new AtomicInteger(0);
+    
+                    // 1) Prepare queue, lock, semaphores
+                    PriorityQueue<PSJFTask> queue =
+                        new PriorityQueue<>(Comparator.comparingInt(PSJFTask::getRemainingTime));
+                    ReentrantLock lock = new ReentrantLock(true);
+                    Semaphore arrivals = new Semaphore(0);
+                    Semaphore coreDone = new Semaphore(0);
+    
+                    // 2) Create and start tasks
+                    List<PSJFTask> tasks = new ArrayList<>();
                     System.out.println("# threads = " + t);
                     for (int i = 0; i < t; i++) {
-                        Task task = new Task(rand.nextInt(1, 51), i, completedTasks);
-                        System.out.printf("Main thread     | Creating process thread %d%n", i);
+                        int burst = rand.nextInt(1, 51);
+                        PSJFTask task = new PSJFTask(burst, i, completed);
+                        System.out.printf("Main thread | Creating PSJFTask %d (burst=%d)%n", i, burst);
                         task.start();
-                        allTasks.add(task);
+                        tasks.add(task);
                     }
-
-                    // 2) Simulate staggered arrivals
+    
+                    // 3) Staggered arrivals
                     new Thread(() -> {
-                        for (Task task : allTasks) {
+                        for (PSJFTask task : tasks) {
+                            try { Thread.sleep(rand.nextInt(1,6) * 2L); }
+                            catch (InterruptedException ignored) {}
+                            lock.lock();
                             try {
-                                Thread.sleep(rand.nextInt(1, 6) * 100L);
-                            } catch (InterruptedException ignored) {}
-
-                            Dispatcher.psjfLock.lock();
-                            try {
-                                Dispatcher.psjfQueue.add(task);
-                                System.out.printf("Task %d arrived; queue:%n", task.tID);
-                                printReadyQ(Dispatcher.psjfQueue);
-                            } finally {
-                                Dispatcher.psjfLock.unlock();
-                            }
-
-                            Dispatcher.arrivals.release();         // Let dispatcher know task has arrived
-                            Dispatcher.dispatcherStart.release();  // Unblock dispatcher for each arrival
+                                queue.add(task);
+                                System.out.printf("Task %d arrived; queue:\n", task.getID());
+                                printPSJFReadyQueue(queue);
+                            } finally { lock.unlock(); }
+                            arrivals.release();
                         }
                     }).start();
+    
+                    // 4) Start core & dispatcher
+                    System.out.println("\nMain thread     | Forking PSJF dispatcher and core");
+    System.out.println("Dispatcher 0    | Using CPU 0");
+    System.out.println("Dispatcher 0    | Now releasing dispatchers.\n");
 
+    PSJFCore coreThread = new PSJFCore(0, coreDone);
+    PSJFDispatcher disp  = new PSJFDispatcher(
+        queue, lock, arrivals, coreDone,
+        coreThread, completed, t, 0
+    );
 
-                    // 3) Fork dispatcher + core
-                    System.out.println("\nMain thread     | Forking dispatcher 0");
-                    System.out.println("Dispatcher 0    | Using CPU 0");
-                    System.out.println("Dispatcher 0    | Now releasing dispatchers.\n");
-
-                    Core core = new Core(0);
-                    Dispatcher dispatcher = new Dispatcher(
-                        0,
-                        Dispatcher.psjfQueue,
-                        core,
-                        "PSJF",
-                        t,
-                        cores,
-                        completedTasks,
-                        Dispatcher.psjfLock,
-                        Dispatcher.arrivals
-                    );
-                    core.start();
-                    dispatcher.start();
-                    break;
+    coreThread.start();
+    disp.      start();
+    break;
                 }
-
+                
             }
         } else {
             System.out.println("Incorrect arguments. expected -S <1/2/3/4> -C <1/2/3/4>.");
-        }
+        }   
     }
     public static void printReadyQ(Queue<Task> rq){
         System.out.println("--------------- Ready Queue ---------------");
@@ -219,7 +207,15 @@ public class Main {
         System.out.println("-------------------------------------------");
     }
 
-
+    static void printPSJFReadyQueue(PriorityQueue<PSJFTask> queue) {
+        System.out.println("----------- PSJF Ready Queue -----------");
+        for (PSJFTask task : queue) {
+            System.out.printf("ID: %d, Burst Time: %d, Remaining: %d\n",
+                task.getID(), task.burstTime, task.getRemainingTime());
+                
+        }
+        System.out.println("----------------------------------------");
+    }
 
 
 
@@ -348,11 +344,7 @@ public class Main {
             Dispatcher.dispatcherStart = new Semaphore(numOfCores);
         }
 
-        public Dispatcher(int ID, Queue<Task> readyQueue, Core core, String algoType, int t, int numOfCores, AtomicInteger completedTasks, ReentrantLock psjfLock, Semaphore arrivals) {
-        this(ID, readyQueue, core, algoType, t, numOfCores, completedTasks); // Call original constructor
-        Dispatcher.psjfLock = psjfLock; // // <-- new line
-        Dispatcher.arrivals = arrivals; }// // <-- new line
-
+       
         @Override
         public void run() {
             countMutex.lock();
@@ -437,82 +429,8 @@ public class Main {
                     countMutex.unlock();
                 }
 
-                case ("PSJF") -> {  // Preemptive Shortest Job First
-                    System.out.println("Dispatcher " + dID + " | Running Preemptive Shortest Job First");
-
-                    while (true) {
-                        if (completedTasks.get() == t) break;  // Exit condition if all tasks are done
-
-                        dispatcherStart.acquireUninterruptibly();
-                        System.out.println("Dispatcher " + dID + " | Task selection started.");
-
-                        arrivals.acquireUninterruptibly();  // Wait until a task arrives
-                        System.out.println("Dispatcher " + dID + " | Task arrived.");
-
-                        // Select the task safely with synchronization
-                        psjfLock.lock();
-                        Task selectedTask = null;
-                        try {
-                            // Poll the task with the shortest burst time from the queue
-                            selectedTask = psjfQueue.poll();  // Select the task with the shortest remaining burst time
-                            if (selectedTask != null) {
-                                System.out.println("Selected task: " + selectedTask.tID);  // Debugging
-                            }
-                        } finally {
-                            psjfLock.unlock();
-                        }
-
-                        if (selectedTask == null) {
-                            System.out.println("No task available for execution. Continuing.");
-                            continue;  // If no task is selected, continue
-                        }
-
-                        int remainingBurst = selectedTask.burstTime - selectedTask.progress;
-
-                        // Process the selected task
-                        if (remainingBurst > 0) {
-                            System.out.printf("Dispatcher %d    | Running process %d (Progress: %d/%d)\n",
-                                    dID, selectedTask.tID, selectedTask.progress, selectedTask.burstTime);
-
-                            assignedCore.setCurrentTask(selectedTask, 1);  // Run 1 unit
-                            assignedCore.coreStart.release();              // Start core
-
-
-                            // After running, check if task is finished or needs more time
-                            if (selectedTask.progress < selectedTask.burstTime) {
-                                // If the task is not finished, re-add it back to the queue
-                                psjfLock.lock();
-                                try {
-                                    psjfQueue.add(selectedTask);  // Add the task back for future scheduling
-                                    arrivals.release();  // Notify that a task is ready to be handled
-                                    System.out.println("Re-added task: " + selectedTask.tID);  // Debugging
-
-
-                                } finally {
-                                    psjfLock.unlock();
-                                }
-                            } else {
-                                // Task is complete, safely increment completedTasks
-                                completedTasks.incrementAndGet();
-                                System.out.printf("Dispatcher %d    | Task %d completed (%d/%d)\n",
-                                        dID, selectedTask.tID, completedTasks.get(), t);
-                            }
-
-                        }
-                    }
-
-                    // Barrier logic to cleanly exit once all dispatchers are done
-                    countMutex.lock();
-                    try {
-                        barrierCount--;
-                        if (barrierCount == 0) {
-                            System.out.println("All tasks done, program exiting.");
-                            System.exit(0);
-                        }
-                    } finally {
-                        countMutex.unlock();
-                    }
-                }
+               
+                
             }
         }
     }
@@ -547,6 +465,174 @@ public class Main {
             this.allottedBurstTime = allottedBurstTime;
         }
     }
+    public static class PSJFTask extends Thread {
+        private final int tID;
+        private final int burstTime;
+        private int progress = 0;
+        private boolean isFinished = false;
+        private static AtomicInteger completedCounter;
+        private final Semaphore taskStart  = new Semaphore(0);
+        private final Semaphore taskFinish = new Semaphore(0);
+    
+        public PSJFTask(int burstTime, int tID, AtomicInteger completedCounter) {
+            this.burstTime = burstTime;
+            this.tID       = tID;
+            PSJFTask.completedCounter = completedCounter;
+        }
+    
+        public int  getID()            { return tID; }
+        public int  getRemainingTime() { return burstTime - progress; }
+        public boolean isFinished()    { return isFinished; }
+        public Semaphore getTaskStart()  { return taskStart; }
+        public Semaphore getTaskFinish() { return taskFinish; }
+    
+        // called by core each slice to tell us which core is running 
+        private int currentCoreID;
+        public void coreUpdate(int coreID) {
+            this.currentCoreID = coreID;
+        }
+    
+        @Override
+        public void run() {
+            while (true) {
+                // wait 
+                taskStart.acquireUninterruptibly();
+    
+                // if done, break out
+                if (progress >= burstTime) {
+                    break;
+                }
+    
+                // do exactly one unit of work
+                progress++;
+                System.out.printf(
+                    "Task %d | Core %d working burst %d/%d%n",
+                    tID, currentCoreID, progress, burstTime
+                );
+    
+                // signal
+                taskFinish.release();
+    
+                if (progress >= burstTime) {
+                    isFinished = true;
+                    System.out.printf("Task %d | Completed%n", tID);
+                    completedCounter.incrementAndGet();
+                    // leave the loop on next wake
+                }
+            }
+        }}
+
+public static class PSJFCore extends Thread {
+    private final int cID;
+    private final Semaphore coreStart;       // dispatcher-core
+    private final Semaphore dispatcherDone;  // core-dispatcher
+    private PSJFTask currentTask;
+
+    public PSJFCore(int id, Semaphore dispatcherDone) {
+        this.cID            = id;
+        this.dispatcherDone = dispatcherDone;
+        this.coreStart      = new Semaphore(0);
+    }
+
+    public void assignTask(PSJFTask task, int i) {
+        this.currentTask = task;
+    }
+
+    public Semaphore getCoreStart() {
+        return coreStart;
+    }
+
+    @Override
+    public void run() {
+        while (true) {
+            coreStart.acquireUninterruptibly();    // wait for dispatcher
+            currentTask.coreUpdate(cID);
+            currentTask.getTaskStart().release();  // run exactly 1 unit
+            currentTask.getTaskFinish().acquireUninterruptibly();
+            dispatcherDone.release();              // back to dispatcher
+        }
+    }
+}
+public static class PSJFDispatcher extends Thread {
+    private final PriorityQueue<PSJFTask> queue;
+    private final ReentrantLock lock;
+    private final Semaphore arrivals;
+    private final Semaphore coreDone;
+    private final PSJFCore core;
+    private final AtomicInteger completed;
+    private final int totalTasks;
+    private final int coreID;
+
+    public PSJFDispatcher(
+        PriorityQueue<PSJFTask> queue,
+        ReentrantLock lock,
+        Semaphore arrivals,
+        Semaphore coreDone,
+        PSJFCore core,
+        AtomicInteger completed,
+        int totalTasks,
+        int coreID
+    ) {
+        this.queue = queue;
+        this.lock = lock;
+        this.arrivals = arrivals;
+        this.coreDone = coreDone;
+        this.core = core;
+        this.completed = completed;
+        this.totalTasks = totalTasks;
+        this.coreID = coreID;
+    }
+
+    @Override
+        public void run() {
+            while (completed.get() < totalTasks) {
+                // 1) Wait until at least one arrival or re-queue
+                arrivals.acquireUninterruptibly();
+    
+                PSJFTask task;
+                lock.lock();
+                try {
+                    task = queue.poll();        // shortest-remaining first
+                } finally {
+                    lock.unlock();
+                }
+                if (task == null || task.isFinished()) continue;
+    
+                System.out.printf(
+                  "PSJFDispatcher | Dispatching task %d (rem %d)%n",
+                  task.getID(), task.getRemainingTime()
+                );
+    
+                // 2) **Slice size = 1**, not the whole remaining time
+                core.assignTask(task, 1);
+                core.getCoreStart().release();
+    
+                // 3) Wait for  one unit to finish
+                coreDone.acquireUninterruptibly();
+    
+                // 4) If not done, re-queue; otherwise count it as complete
+                if (!task.isFinished()) {
+                    lock.lock();
+                    try {
+                        queue.add(task);
+                    } finally {
+                        lock.unlock();
+                    }
+                    arrivals.release();
+                } else {
+                    System.out.printf(
+                      "PSJFDispatcher | Task %d done (%d/%d)%n",
+                      task.getID(), completed.get(), totalTasks
+                    );
+                }
+            }
+            System.out.println("PSJFDispatcher | All tasks completed");
+            
+        
+        }
+    }
+    
+
 
     public class RoundRobin {
 
